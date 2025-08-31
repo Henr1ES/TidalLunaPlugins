@@ -1,0 +1,11 @@
+{
+	"name": "@Henr1ES/LangRomanizer",
+	"description": "Romanticize Chinese, Japanese, and Korean lyrics",
+	"author": {
+		"name": "Henr1ES",
+		"url": "https://https://github.com/Henr1ES",
+		"avatarUrl": "https://avatars.githubusercontent.com/u/48323104?v=4"
+	},
+	"main": "./src/index.ts",
+	"type": "module"
+}

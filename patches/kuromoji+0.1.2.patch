@@ -1,0 +1,49 @@
+diff --git a/node_modules/kuromoji/src/loader/DictionaryLoader.js b/node_modules/kuromoji/src/loader/DictionaryLoader.js
+index 5f88c0b..d8c1eb0 100644
+--- a/node_modules/kuromoji/src/loader/DictionaryLoader.js
++++ b/node_modules/kuromoji/src/loader/DictionaryLoader.js
+@@ -43,12 +43,12 @@ DictionaryLoader.prototype.load = function (load_callback) {
+     var dic = this.dic;
+     var dic_path = this.dic_path;
+     var loadArrayBuffer = this.loadArrayBuffer;
+-
+     async.parallel([
+         // Trie
+         function (callback) {
+             async.map([ "base.dat.gz", "check.dat.gz" ], function (filename, _callback) {
+-                loadArrayBuffer(path.join(dic_path, filename), function (err, buffer) {
++                const url = dic_path + filename;
++                loadArrayBuffer(url, function (err, buffer) {
+                     if(err) {
+                         return _callback(err);
+                     }
+@@ -68,7 +68,8 @@ DictionaryLoader.prototype.load = function (load_callback) {
+         // Token info dictionaries
+         function (callback) {
+             async.map([ "tid.dat.gz", "tid_pos.dat.gz", "tid_map.dat.gz" ], function (filename, _callback) {
+-                loadArrayBuffer(path.join(dic_path, filename), function (err, buffer) {
++                const url = dic_path + filename;
++                loadArrayBuffer(url, function (err, buffer) {
+                     if(err) {
+                         return _callback(err);
+                     }
+@@ -88,7 +89,8 @@ DictionaryLoader.prototype.load = function (load_callback) {
+         },
+         // Connection cost matrix
+         function (callback) {
+-            loadArrayBuffer(path.join(dic_path, "cc.dat.gz"), function (err, buffer) {
++            const url = dic_path + "cc.dat.gz";
++            loadArrayBuffer(url, function (err, buffer) {
+                 if(err) {
+                     return callback(err);
+                 }
+@@ -100,7 +102,8 @@ DictionaryLoader.prototype.load = function (load_callback) {
+         // Unknown dictionaries
+         function (callback) {
+             async.map([ "unk.dat.gz", "unk_pos.dat.gz", "unk_map.dat.gz", "unk_char.dat.gz", "unk_compat.dat.gz", "unk_invoke.dat.gz" ], function (filename, _callback) {
+-                loadArrayBuffer(path.join(dic_path, filename), function (err, buffer) {
++                const url = dic_path + filename;
++                loadArrayBuffer(url, function (err, buffer) {
+                     if(err) {
+                         return _callback(err);
+                     }

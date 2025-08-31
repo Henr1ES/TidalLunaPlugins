@@ -1,22 +1,33 @@
 {
-	"name": "@luna/template",
-	"description": "Template repo for making your own luna plugins",
+	"name": "@Henr1ES/TidalLuna-Plugins",
+	"description": "Plugins for Tidal Luna made by @Henr1ES :D",
 	"type": "module",
 	"scripts": {
 		"watch": "concurrently \"pnpm:build --watch\" pnpm:serve",
 		"build": "rimraf ./dist && tsx esbuild.config.ts",
-		"serve": "http-server ./dist -p 3000 -s --cors -c-1"
+		"serve": "http-server ./dist -p 3000 -s --cors -c-1",
+		"postinstall": "patch-package"
 	},
 	"devDependencies": {
-		"@types/node": "^22.15.29",
-		"@types/react": "^19.1.6",
-		"@types/react-dom": "^19.1.5",
+		"@types/node": "^24.0.0",
+		"@types/react": "^19.1.7",
+		"@types/react-dom": "^19.1.6",
 		"concurrently": "^9.1.2",
+		"electron": "^36.4.0",
 		"http-server": "^14.1.1",
 		"luna": "github:Inrixia/TidaLuna#81369c7",
 		"oby": "^15.1.2",
+		"patch-package": "^8.0.0",
+		"postinstall-postinstall": "^2.1.0",
 		"rimraf": "^6.0.1",
-		"tsx": "^4.19.4",
+		"tsx": "^4.20.0",
 		"typescript": "^5.8.3"
+	},
+	"dependencies": {
+		"hangul-js": "^0.2.6",
+		"kuromoji": "^0.1.2",
+		"kuroshiro": "^1.2.0",
+		"kuroshiro-analyzer-kuromoji": "^1.1.0",
+		"pinyin": "^4.0.0"
 	}
 }
