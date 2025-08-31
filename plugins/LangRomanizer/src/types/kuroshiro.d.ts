@@ -14,7 +14,6 @@ declare module "kuroshiro-analyzer-kuromoji" {
 
 declare module "kuroshiro" {
     export default class Kuroshiro {
-        static Util: any;
         constructor();
         init(analyzer: any): Promise<void>;
         convert(text: string, options?: any): Promise<string>;

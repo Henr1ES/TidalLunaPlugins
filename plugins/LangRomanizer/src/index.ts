@@ -1,5 +1,5 @@
 import { LunaUnload, Tracer } from "@luna/core";
-import { redux } from "@luna/lib";
+import { redux, observe } from "@luna/lib";
 import { settings, Settings } from "./Settings";
 // Module for Romantization
 import { convert as hangulToRoman } from "hangul-romanization";
@@ -17,16 +17,168 @@ export const unloads = new Set<LunaUnload>();
 const kuroshiro = new Kuroshiro();
 await kuroshiro.init(new KuromojiAnalyzer({ dictPath: 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/' }));
 
+// Regex 
+const regexJp = (/\p{sc=Hiragana}|\p{sc=Katakana}/u);
+const regexCh = (/\p{sc=Han}/u);
+const regexKr = (/\p{sc=Hangul}/u);
+const regexLat = (/\p{sc=Latin}/u);
 
-// Process Lyrics and insert them into the redux.Lyrics object
+// Plugin Constants
+const autoRomanize = settings.toggleRomanize;
+let lyricsLoaded = false;
+
+enum scriptsEnum {
+    Latin,
+    LatinCJK,
+    CJK,
+    Ch,
+    Ja,
+    Kr,
+}
+
+/**
+ * 
+ * @param text Text to check in what script is
+ * @returns scriptsEnum{ Latin, LatinCJK, CJK, Ch, Ja, Kr }
+ */
+function checkScript(text: string): scriptsEnum {
+    const hasJp = regexJp.test(text);
+    const hasCh = regexCh.test(text);
+    const hasKr = regexKr.test(text);
+    const hasLat = regexLat.test(text);
+
+    switch (true) {
+        case !hasLat && hasCh && !hasJp && !hasKr:
+            return scriptsEnum.Ch;
+        case !hasLat && hasJp && !hasKr:
+            return scriptsEnum.Ja;
+        case !hasLat && hasKr && !hasJp && !hasCh:
+            return scriptsEnum.Kr;
+        case hasLat && !hasCh && !hasJp && !hasKr:
+            return scriptsEnum.Latin;
+        case !hasLat && hasCh && hasKr && hasJp:
+            return scriptsEnum.CJK;
+        case hasLat && (hasCh || hasJp || hasKr):
+            return scriptsEnum.LatinCJK;
+        case !hasJp && !hasCh && !hasKr:
+        default:
+            return scriptsEnum.Latin
+    }
+}
+
+/**
+ * Spliting the characters by language
+ * @param lyricsLine 
+ * @returns 
+ */
+async function tokenize(lyricsLine: string): Promise<string> {
+    let hasJapanese = regexJp.test(lyricsLine);
+    const chars = [...lyricsLine];
+    let firstChar = chars.shift();
+    if (!firstChar) return "";
+    let prevType = checkScript(firstChar);
+    //trace.log("tokenize", lyricsLine);
+    const splitDiff = chars.reduce(
+        (res: Array<{ type: scriptsEnum, value: string }>, char: string) => {
+            let currentType = checkScript(char);
+            if (hasJapanese && currentType == scriptsEnum.Ch) { currentType = scriptsEnum.Ja; }
+            const sameType = currentType === prevType;
+            prevType = currentType;
+            let newValue = char;
+
+            if (sameType && res.length > 0) {
+                // Merge with previous value
+                const last = res.pop();
+                if (last) {
+                    newValue = last.value + newValue;
+                }
+            }
+            return res.concat({ type: currentType, value: newValue });
+        }, [{ type: checkScript(firstChar), value: firstChar }]
+    );
+    //trace.log("splitdiff ", splitDiff);
+    const romanizedLine: string[] = [];
+    for (const part of splitDiff) {
+        // Only romanize if the type is Ch, Ja, or Kr
+        if ([scriptsEnum.Ch, scriptsEnum.Ja, scriptsEnum.Kr].includes(part.type)) {
+            const romanized = await romanizer(part.value, part.type);
+            romanizedLine.push(romanized);
+        } else {
+            romanizedLine.push(part.value);
+        }
+    }
+    trace.log("romanized line ", romanizedLine);
+    return romanizedLine.join(' ');
+}
+
+
+/**
+ * 
+ * @param text Text to romanize
+ * @param script What script is gonna romanize, value from the scriptsEnum
+ * @returns Text romanized
+ */
+async function romanizer(text: string, script: scriptsEnum): Promise<string> {
+    trace.log("romanizer", text, " ", scriptsEnum[script]);
+    switch (script) {
+        case scriptsEnum.Ja:
+            return await kuroshiro.convert(text.replace(/\s/g, ""), { to: "romaji", mode: "spaced" });
+        case scriptsEnum.Kr:
+            return hangulToRoman(text);
+        case scriptsEnum.Ch:
+            return pinyin(text, { style: pinyin.STYLE_NORMAL, heteronym: false }).flat().join(' ');
+    }
+    return "";
+}
+
+
+/**
+ * 
+ * @param lyricsLine String object that has the lyrics text
+ * @returns 
+ */
+async function processLine(lyricsLine: string): Promise<string> {
+    if (lyricsLine != null) {
+        switch (checkScript(lyricsLine)) {
+            case scriptsEnum.LatinCJK:
+            case scriptsEnum.CJK:
+                return await tokenize(lyricsLine);
+            case scriptsEnum.Ch:
+                return await romanizer(lyricsLine, scriptsEnum.Ch);
+            case scriptsEnum.Ja:
+                return await romanizer(lyricsLine, scriptsEnum.Ja);
+            case scriptsEnum.Kr:
+                return await romanizer(lyricsLine, scriptsEnum.Ja);
+            case scriptsEnum.Latin:
+            default:
+                return lyricsLine;
+        }
+    }
+    return "";
+}
+
+
+/**
+ * First this method checks if the lyrics does have any script to romanize, if not return null.
+ * Next splits the lyrics and subtitle (this has the timestamp like this [MM:SS.miliseconds] LyricsText )
+ * so for each line is gonna call the method {@link processLine}, this method is gonna return us
+ * the romantized text.
+ * When all the lyrics text is processed append both the original and romanticied lyrics into the 
+ * {@link redux.Lyrics.lyrics} and {@link redux.Lyrics.subtitles}
+ * 
+ * @param  {redux.Lyrics} lyrics object provided from the redux intercept method
+ * @returns {null} Null
+ */
 async function processLyrics(lyrics: redux.Lyrics) {
     if (!lyrics) return null;
-
+    trace.log("checkScript", scriptsEnum[checkScript(lyrics.lyrics)]);
+    if (![scriptsEnum.CJK, scriptsEnum.LatinCJK].includes(checkScript(lyrics.lyrics))) return null;
+    trace.log("Processing lyrics...");
     try {
         const splitLyrics = lyrics.lyrics.split('\n');
         const splitSubtitles = lyrics.subtitles.split('\n');
-        let romanizedLyrics = { lyrics: 'lyricshidden\n', subtitles: '[00:00.00] lyricshidden\n' };
-
+        let romanizedLyrics = { lyrics: '', subtitles: '' };
+        let last_timestamp = ""
         for (let i = 0; i < Math.min(splitLyrics.length, splitSubtitles.length); i++) {
             const subtitleLine = splitSubtitles[i].trim();
             const timestampMatch = subtitleLine.match(/^\[[\d:.]+\]\s/);
@@ -34,54 +186,68 @@ async function processLyrics(lyrics: redux.Lyrics) {
             if (timestampMatch) {
                 const timestamp = timestampMatch[0];
                 const lineText = subtitleLine.substring(timestamp.length).trim();
-                let lineProcessed = "";
-                if (lineText.match(/\p{sc=Hiragana}|\p{sc=Katakana}/u)) {
-                    lineProcessed = await kuroshiro.convert(lineText.replace(/\s/g, ""), { to: "romaji", mode: "spaced" });
-                    trace.log(timestamp, ' - ', lineText, " - ", lineProcessed)
-                }
-                else if (lineText.match(/\p{sc=Hangul}/u)) {
-                    lineProcessed = hangulToRoman(lineText);
-                }
-                else if (lineText.match(/\p{sc=Han}/u)) {
-                    lineProcessed = pinyin(lineText, { style: pinyin.STYLE_NORMAL, heteronym: false }).flat().join(' ');   
-                }
+                let lineProcessed = await processLine(lineText);
+                trace.log(timestamp, ' - ', lineText, " - ", lineProcessed)
                 // Append romanized line to lyrics and subtitles
                 romanizedLyrics.lyrics += lineProcessed + '\n';
                 romanizedLyrics.subtitles += timestamp + lineProcessed + '\n';
-                //trace.log(lineProcessed)
+                last_timestamp = timestamp
             }
         }
+        romanizedLyrics.lyrics += "lyricshidden\n";
+        romanizedLyrics.subtitles += last_timestamp + "lyricshidden\n";
         if (romanizedLyrics) {
-            lyrics.lyrics += "\n" + romanizedLyrics.lyrics;
-            lyrics.subtitles += "\n" + romanizedLyrics.subtitles;
+            lyrics.lyrics = romanizedLyrics.lyrics + "\n" + lyrics.lyrics;
+            lyrics.subtitles = romanizedLyrics.subtitles + "\n" + lyrics.subtitles;
             await redux.actions["content/LOAD_ITEM_LYRICS_FAIL"]({ itemId: lyrics.trackId });
             await redux.actions["content/LOAD_ITEM_LYRICS_SUCCESS"](lyrics);
             //trace.log(lyrics.lyrics);
             //trace.log(lyrics.subtitles);
         }
-        /*
-        const container = document.querySelector('[class^="_lyricsText"]')?.querySelector("div")?.querySelectorAll("span");
-        if (container){
-            trace.log(container[container.length - 1].innerHTML);
-            container[container.length - 1].innerHTML = "test";
+        trace.log("Lyrics processed successfully.");
+        if (autoRomanize) {
+            await toggleLyricsRomanization();
         }
-        */
-        trace.msg.log("Lyrics processed successfully.");
     } catch (error) {
-        trace.msg.err("Error processing lyrics:", error);
+        trace.msg.err("Error during lyrics romanization:", error);
         return null;
     }
 };
 
-const lyricsRomanization = async function (): Promise<void> {
-    try {
-        trace.msg.log("Lyrics found, processing...");
-        //await processLyrics(originalLyrics);
 
-    } catch (error) {
-        trace.msg.err("Error during lyrics romanization:", error);
-        return;
+const toggleLyricsRomanization = async function (): Promise<void> {
+    trace.msg.log("Toggling Lyrics between Original and Romanization....")
+    const lyricsSpans = document.querySelector('[class^="_lyricsText"]')?.querySelector("div")?.querySelectorAll("span");
+    let lyricsHiddenSpanFound = false
+    if (lyricsSpans) {
+        lyricsSpans.forEach(value => {
+            switch (true) {
+                // This will execute the first time after processing lyrics an all span nodes
+                // If autoRomanize is True the lyrics romanticized before the lyricsHiddenSpan will be shown
+                // and all after will be hidden
+                case !value.hasAttribute("style"):
+                    value.style.display = autoRomanize && !lyricsHiddenSpanFound ? "block" : "none";
+
+                    // Check for the span with "lyricshidden" so it can know when the original lyrics starts
+                    break;
+                case value.hasAttribute("style"):
+                    switch (value.style.display) {
+                        case "block":
+                            value.style.display = "none"
+                            break;
+                        case "none":
+                            value.style.display = "block"
+                            break;
+                    }
+                    break;
+            }
+            if (value.innerText == "lyricshidden") {
+                lyricsHiddenSpanFound = true;
+                value.style.display = "none";
+            }
+        })
     }
+
 };
 
 // Creates a button to toggle romanization of lyrics and places it next to the fullscreen button
@@ -112,12 +278,12 @@ const createRomanizeButton = () => {
         romanizeButton.id = 'romanize-button';
         romanizeButton.className = 'romanize-button' + " " + fullscreenButton.className;
         romanizeSpan.textContent = 'Romanize Lyrics';
-        if (spanClass){
+        if (spanClass) {
             romanizeSpan.className = spanClass;
             romanizeSpan.setAttribute('data-save-color', 'textDefault');
         }
 
-        romanizeButton.onclick = lyricsRomanization;
+        romanizeButton.onclick = toggleLyricsRomanization;
 
         // Insert after the fullscreen button
         romanizeButton.appendChild(romanizeSpan);
@@ -126,15 +292,29 @@ const createRomanizeButton = () => {
     }, 500);
 };
 
+function lyricsContainerObserver(): void {
+    const lyricsText = document.querySelector('[class^="_lyricsText"]');
+    if (lyricsText) return;
+    observe<HTMLElement>(unloads, '[class^="_lyricsText"]', () => {
+        if (!lyricsLoaded && autoRomanize) {
+            lyricsLoaded = true;
+            toggleLyricsRomanization();
+        }
+    });
+}
+
 redux.intercept("view/ENTERED_NOWPLAYING", unloads, () => {
+    lyricsContainerObserver()
     createRomanizeButton();
 });
 
 redux.intercept("content/LOAD_ITEM_LYRICS_SUCCESS", unloads, (payload) => {
     processLyrics(payload);
-    if (settings.toggleRomanize) {
-        lyricsRomanization();
-    }
+});
+
+redux.intercept("content/LOAD_ITEM_LYRICS", unloads, (payload) => {
+    trace.log(payload);
+    return;
 });
 
 unloads.add(() => {
