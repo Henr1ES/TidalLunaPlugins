@@ -1,5 +1,5 @@
 import { LunaUnload, Tracer } from "@luna/core";
-import { redux, observe } from "@luna/lib";
+import { redux, observe , safeTimeout} from "@luna/lib";
 import { settings, Settings } from "./Settings";
 // Module for Romantization
 import { convert as hangulToRoman } from "hangul-romanization";
@@ -214,7 +214,9 @@ async function processLyrics(lyrics: redux.Lyrics) {
     }
 };
 
-
+// TODO BUG FIX:
+// change the way on the lyrics is saved because now only the romanized lyrics has the data-current updating correctly
+// and when toggling between both lyrics the original doesn't update
 const toggleLyricsRomanization = async function (): Promise<void> {
     trace.msg.log("Toggling Lyrics between Original and Romanization....")
     const lyricsSpans = document.querySelector('[class^="_lyricsText"]')?.querySelector("div")?.querySelectorAll("span");
@@ -253,7 +255,7 @@ const toggleLyricsRomanization = async function (): Promise<void> {
 // Creates a button to toggle romanization of lyrics and places it next to the fullscreen button
 // thanks to meowarex literally copied from their plugin xd
 const createRomanizeButton = () => {
-    setTimeout(() => {
+    safeTimeout(unloads, () => {
         // Check if the button already exists
         if (document.querySelector('#romanize-button')) return;
 
@@ -261,12 +263,12 @@ const createRomanizeButton = () => {
         const fullscreenButton = document.querySelector('[data-test^="request-fullscreen"]');
         // Not found, retry after a delay
         if (!fullscreenButton || !fullscreenButton.parentElement) {
-            setTimeout(() => createRomanizeButton(), 1250);
+            safeTimeout(unloads, () => createRomanizeButton(), 1250);
             return;
         }
         const fullcreenSpan = fullscreenButton.querySelector("span");
         if (!fullcreenSpan || !fullcreenSpan.parentElement) {
-            setTimeout(() => createRomanizeButton(), 1250);
+            safeTimeout(unloads, () => createRomanizeButton(), 1250);
             return;
         }
         const buttonContainer = fullscreenButton.parentElement;
@@ -313,8 +315,7 @@ redux.intercept("content/LOAD_ITEM_LYRICS_SUCCESS", unloads, (payload) => {
 });
 
 redux.intercept("content/LOAD_ITEM_LYRICS", unloads, (payload) => {
-    trace.log(payload);
-    return;
+    //trace.log(payload);
 });
 
 unloads.add(() => {
