@@ -17,17 +17,17 @@
 		"http-server": "^14.1.1",
 		"luna": "github:Inrixia/TidaLuna#81369c7",
 		"oby": "^15.1.2",
-		"patch-package": "^8.0.0",
 		"postinstall-postinstall": "^2.1.0",
 		"rimraf": "^6.0.1",
 		"tsx": "^4.20.0",
 		"typescript": "^5.8.3"
 	},
 	"dependencies": {
-		"hangul-js": "^0.2.6",
+		"hangul-romanization": "^1.0.1",
 		"kuromoji": "^0.1.2",
 		"kuroshiro": "^1.2.0",
 		"kuroshiro-analyzer-kuromoji": "^1.1.0",
+		"patch-package": "^8.0.0",
 		"pinyin": "^4.0.0"
 	}
 }
