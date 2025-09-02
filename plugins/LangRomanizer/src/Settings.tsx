@@ -4,7 +4,7 @@ import React from "react";
 
 export const settings = await ReactiveStore.getPluginStorage("LangRomanizer", {
     toggleRomanize: true,
-    showDebug: true,
+    showDebug: false,
 });
 
 export const Settings = () => {

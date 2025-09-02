@@ -31,14 +31,14 @@ enum scriptsEnum {
     LatinCJK,
     CJK,
     Ch,
-    Ja,
+    Jp,
     Kr,
 }
 
 /**
  * 
  * @param text Text to check in what script is
- * @returns { scriptsEnum } scriptsEnum{ Latin, LatinCJK, CJK, Ch, Ja, Kr }
+ * @returns { scriptsEnum } scriptsEnum{ Latin, LatinCJK, CJK, Ch, Jp, Kr }
  */
 function checkScript(text: string): scriptsEnum {
     const hasJp = regexJp.test(text);
@@ -50,7 +50,7 @@ function checkScript(text: string): scriptsEnum {
         case !hasLat && hasCh && !hasJp && !hasKr:
             return scriptsEnum.Ch;
         case !hasLat && hasJp && !hasKr:
-            return scriptsEnum.Ja;
+            return scriptsEnum.Jp;
         case !hasLat && hasKr && !hasJp && !hasCh:
             return scriptsEnum.Kr;
         case hasLat && !hasCh && !hasJp && !hasKr:
@@ -71,30 +71,35 @@ function checkScript(text: string): scriptsEnum {
  * @returns { Promise<string> }
  */
 async function tokenize(lyricsLine: string): Promise<string> {
-    let hasJapanese = regexJp.test(lyricsLine);
     const chars = [...lyricsLine];
     let firstChar = chars.shift();
     if (!firstChar) return "";
-    let firstType = checkScript(firstChar);
-    if (hasJapanese && firstType == scriptsEnum.Ch){firstType = scriptsEnum.Ja;}
-    const splitScript = chars.reduce(
-        (res: Array<{ type: scriptsEnum, value: string }>, char: string) => {
-            let currentType = checkScript(char);
-            if (hasJapanese && currentType == scriptsEnum.Ch) { currentType = scriptsEnum.Ja; }
-            const sameType = currentType === firstType;
-            firstType = currentType;
-            let newValue = char;
+    let prevType = checkScript(firstChar);
+    let hasJapanese = regexJp.test(lyricsLine);
 
-            if (sameType && res.length > 0) {
-                // Merge with previous value
-                const last = res.pop();
-                if (last) {
-                    newValue = last.value + newValue;
-                }
+    const splitScript: Array<{ type: scriptsEnum, value: string }> = [{
+        type: hasJapanese && prevType === scriptsEnum.Ch ? scriptsEnum.Jp : prevType,
+        value: firstChar
+    }]
+
+    chars.forEach((char) => {
+        let currentType = checkScript(char);
+        if (hasJapanese && currentType == scriptsEnum.Ch) { currentType = scriptsEnum.Jp; }
+
+        const sameType = currentType === prevType;
+        prevType = currentType;
+        let newValue = char;
+        
+        if (sameType && splitScript.length > 0) {
+            // Merge with previous value
+            const last = splitScript.pop();
+            if (last) {
+                newValue = last.value + newValue;
             }
-            return res.concat({ type: currentType, value: newValue });
-        }, [{ type: firstType, value: firstChar }]
-    );
+        }
+        splitScript.push({ type: currentType, value: newValue})
+    });
+
     if (settings.showDebug) {
         trace.debug("hasJapanese:", hasJapanese, "Tokenize: ", splitScript.map(value => ({
             type: scriptsEnum[value.type],
@@ -104,11 +109,11 @@ async function tokenize(lyricsLine: string): Promise<string> {
     const romanizedLine: string[] = [];
     for (const part of splitScript) {
         // Only romanize if the type is Ch, Ja, or Kr
-        if ([scriptsEnum.Ch, scriptsEnum.Ja, scriptsEnum.Kr].includes(part.type)) {
+        if ([scriptsEnum.Ch, scriptsEnum.Jp, scriptsEnum.Kr].includes(part.type)) {
             const romanized = await romanizer(part.value, part.type);
             romanizedLine.push(romanized);
         } else {
-            romanizedLine.push(part.value.trim());
+            romanizedLine.push(part.value);
         }
     }
     return romanizedLine.join(' ');
@@ -123,7 +128,7 @@ async function tokenize(lyricsLine: string): Promise<string> {
  */
 async function romanizer(text: string, script: scriptsEnum): Promise<string> {
     switch (script) {
-        case scriptsEnum.Ja:
+        case scriptsEnum.Jp:
             return await kuroshiro.convert(text.replace(/\s/g, ""), { to: "romaji", mode: "spaced" });
         case scriptsEnum.Kr:
             return hangulToRoman(text);
@@ -147,10 +152,10 @@ async function processLine(lyricsLine: string): Promise<string> {
                 return await tokenize(lyricsLine);
             case scriptsEnum.Ch:
                 return await romanizer(lyricsLine, scriptsEnum.Ch);
-            case scriptsEnum.Ja:
-                return await romanizer(lyricsLine, scriptsEnum.Ja);
+            case scriptsEnum.Jp:
+                return await romanizer(lyricsLine, scriptsEnum.Jp);
             case scriptsEnum.Kr:
-                return await romanizer(lyricsLine, scriptsEnum.Ja);
+                return await romanizer(lyricsLine, scriptsEnum.Jp);
             case scriptsEnum.Latin:
             default:
                 return lyricsLine;
@@ -190,7 +195,7 @@ async function processLyrics(lyrics: redux.Lyrics) {
 
             if (timestampMatch) {
                 const timestamp = timestampMatch[0];
-                const lineText = subtitleLine.substring(timestamp.length).trim();
+                const lineText = subtitleLine.substring(timestamp.length).replace(/\s/g, "");
                 let lineProcessed = await processLine(lineText);
                 trace.log(timestamp, ' - ', lineText, " - ", lineProcessed)
                 // Append romanized line to lyrics and subtitles
