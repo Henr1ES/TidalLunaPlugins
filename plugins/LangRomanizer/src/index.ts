@@ -1,5 +1,5 @@
 import { LunaUnload, Tracer } from "@luna/core";
-import { redux, observe , safeTimeout} from "@luna/lib";
+import { redux, observe, safeTimeout } from "@luna/lib";
 import { settings, Settings } from "./Settings";
 // Module for Romantization
 import { convert as hangulToRoman } from "hangul-romanization";
@@ -23,8 +23,7 @@ const regexCh = (/\p{sc=Han}/u);
 const regexKr = (/\p{sc=Hangul}/u);
 const regexLat = (/\p{sc=Latin}/u);
 
-// Plugin Constants
-const autoRomanize = settings.toggleRomanize;
+// Plugin variables
 let lyricsLoaded = false;
 
 enum scriptsEnum {
@@ -39,7 +38,7 @@ enum scriptsEnum {
 /**
  * 
  * @param text Text to check in what script is
- * @returns scriptsEnum{ Latin, LatinCJK, CJK, Ch, Ja, Kr }
+ * @returns { scriptsEnum } scriptsEnum{ Latin, LatinCJK, CJK, Ch, Ja, Kr }
  */
 function checkScript(text: string): scriptsEnum {
     const hasJp = regexJp.test(text);
@@ -69,21 +68,21 @@ function checkScript(text: string): scriptsEnum {
 /**
  * Spliting the characters by language
  * @param lyricsLine 
- * @returns 
+ * @returns { Promise<string> }
  */
 async function tokenize(lyricsLine: string): Promise<string> {
     let hasJapanese = regexJp.test(lyricsLine);
     const chars = [...lyricsLine];
     let firstChar = chars.shift();
     if (!firstChar) return "";
-    let prevType = checkScript(firstChar);
-    //trace.log("tokenize", lyricsLine);
-    const splitDiff = chars.reduce(
+    let firstType = checkScript(firstChar);
+    if (hasJapanese && firstType == scriptsEnum.Ch){firstType = scriptsEnum.Ja;}
+    const splitScript = chars.reduce(
         (res: Array<{ type: scriptsEnum, value: string }>, char: string) => {
             let currentType = checkScript(char);
             if (hasJapanese && currentType == scriptsEnum.Ch) { currentType = scriptsEnum.Ja; }
-            const sameType = currentType === prevType;
-            prevType = currentType;
+            const sameType = currentType === firstType;
+            firstType = currentType;
             let newValue = char;
 
             if (sameType && res.length > 0) {
@@ -94,20 +93,24 @@ async function tokenize(lyricsLine: string): Promise<string> {
                 }
             }
             return res.concat({ type: currentType, value: newValue });
-        }, [{ type: checkScript(firstChar), value: firstChar }]
+        }, [{ type: firstType, value: firstChar }]
     );
-    //trace.log("splitdiff ", splitDiff);
+    if (settings.showDebug) {
+        trace.debug("hasJapanese:", hasJapanese, "Tokenize: ", splitScript.map(value => ({
+            type: scriptsEnum[value.type],
+            value: value.value
+        })));
+    }
     const romanizedLine: string[] = [];
-    for (const part of splitDiff) {
+    for (const part of splitScript) {
         // Only romanize if the type is Ch, Ja, or Kr
         if ([scriptsEnum.Ch, scriptsEnum.Ja, scriptsEnum.Kr].includes(part.type)) {
             const romanized = await romanizer(part.value, part.type);
             romanizedLine.push(romanized);
         } else {
-            romanizedLine.push(part.value);
+            romanizedLine.push(part.value.trim());
         }
     }
-    trace.log("romanized line ", romanizedLine);
     return romanizedLine.join(' ');
 }
 
@@ -119,7 +122,6 @@ async function tokenize(lyricsLine: string): Promise<string> {
  * @returns Text romanized
  */
 async function romanizer(text: string, script: scriptsEnum): Promise<string> {
-    trace.log("romanizer", text, " ", scriptsEnum[script]);
     switch (script) {
         case scriptsEnum.Ja:
             return await kuroshiro.convert(text.replace(/\s/g, ""), { to: "romaji", mode: "spaced" });
@@ -171,10 +173,13 @@ async function processLine(lyricsLine: string): Promise<string> {
  */
 async function processLyrics(lyrics: redux.Lyrics) {
     if (!lyrics) return null;
-    trace.log("checkScript", scriptsEnum[checkScript(lyrics.lyrics)]);
-    if (![scriptsEnum.CJK, scriptsEnum.LatinCJK].includes(checkScript(lyrics.lyrics))) return null;
-    trace.log("Processing lyrics...");
+    const lyricsScript = checkScript(lyrics.lyrics);
+    if (![scriptsEnum.CJK, scriptsEnum.LatinCJK].includes(lyricsScript)) return null;
+    if (settings.showDebug) {
+        trace.debug("Lyrics found processing lyrics: ", lyrics);
+    }
     try {
+        trace.log("Starting processing lyrics with script: ", scriptsEnum[lyricsScript]);
         const splitLyrics = lyrics.lyrics.split('\n');
         const splitSubtitles = lyrics.subtitles.split('\n');
         let romanizedLyrics = { lyrics: '', subtitles: '' };
@@ -204,8 +209,8 @@ async function processLyrics(lyrics: redux.Lyrics) {
             //trace.log(lyrics.lyrics);
             //trace.log(lyrics.subtitles);
         }
-        trace.log("Lyrics processed successfully.");
-        if (autoRomanize) {
+        trace.log("Finished successfully processing lyrics.");
+        if (settings.toggleRomanize) {
             await toggleLyricsRomanization();
         }
     } catch (error) {
@@ -218,18 +223,17 @@ async function processLyrics(lyrics: redux.Lyrics) {
 // change the way on the lyrics is saved because now only the romanized lyrics has the data-current updating correctly
 // and when toggling between both lyrics the original doesn't update
 const toggleLyricsRomanization = async function (): Promise<void> {
-    trace.msg.log("Toggling Lyrics between Original and Romanization....")
     const lyricsSpans = document.querySelector('[class^="_lyricsText"]')?.querySelector("div")?.querySelectorAll("span");
     let lyricsHiddenSpanFound = false
     if (lyricsSpans) {
+        trace.msg.log("Switching Lyrics Original / Romanization....")
         lyricsSpans.forEach(value => {
             switch (true) {
                 // This will execute the first time after processing lyrics an all span nodes
                 // If autoRomanize is True the lyrics romanticized before the lyricsHiddenSpan will be shown
                 // and all after will be hidden
                 case !value.hasAttribute("style"):
-                    value.style.display = autoRomanize && !lyricsHiddenSpanFound ? "block" : "none";
-
+                    value.style.display = settings.toggleRomanize && !lyricsHiddenSpanFound ? "block" : "none";
                     // Check for the span with "lyricshidden" so it can know when the original lyrics starts
                     break;
                 case value.hasAttribute("style"):
@@ -298,7 +302,7 @@ function lyricsContainerObserver(): void {
     const lyricsText = document.querySelector('[class^="_lyricsText"]');
     if (lyricsText) return;
     observe<HTMLElement>(unloads, '[class^="_lyricsText"]', () => {
-        if (!lyricsLoaded && autoRomanize) {
+        if (!lyricsLoaded && settings.toggleRomanize) {
             lyricsLoaded = true;
             toggleLyricsRomanization();
         }
