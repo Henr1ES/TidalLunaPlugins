@@ -1,5 +1,5 @@
 import { LunaUnload, Tracer } from "@luna/core";
-import { redux, observe, safeTimeout } from "@luna/lib";
+import { redux, observe, safeTimeout, safeInterval } from "@luna/lib";
 import { settings, Settings } from "./Settings";
 // Module for Romantization
 import { convert as hangulToRoman } from "hangul-romanization";
@@ -15,7 +15,28 @@ export const unloads = new Set<LunaUnload>();
 
 // Init Japanese morphological analyzer
 const kuroshiro = new Kuroshiro();
-await kuroshiro.init(new KuromojiAnalyzer({ dictPath: 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/' }));
+let kuroAnalyzerLoaded: Promise<void> | null = null;
+
+function setUpKuroshiro() {
+    if (!kuroAnalyzerLoaded) {
+        kuroAnalyzerLoaded = (async () => {
+            try {
+                trace.msg.log("Please wait a couple seconds... Initializing Japanese morphological analyzer...");
+                await kuroshiro.init(
+                    new KuromojiAnalyzer({ dictPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/" })
+                );
+                trace.msg.log("Japanese analyzer initialized correctly.");
+            } catch (err) {
+                trace.msg.err("Failed to initialize analyzer.");
+                // reset so you can retry later
+                kuroAnalyzerLoaded = null;
+                throw err;
+            }
+        })();
+    }
+    return kuroAnalyzerLoaded;
+}
+
 
 // Regex 
 const regexJp = (/\p{sc=Hiragana}|\p{sc=Katakana}/u);
@@ -89,7 +110,7 @@ async function tokenize(lyricsLine: string): Promise<string> {
         const sameType = currentType === prevType;
         prevType = currentType;
         let newValue = char;
-        
+
         if (sameType && splitScript.length > 0) {
             // Merge with previous value
             const last = splitScript.pop();
@@ -97,7 +118,7 @@ async function tokenize(lyricsLine: string): Promise<string> {
                 newValue = last.value + newValue;
             }
         }
-        splitScript.push({ type: currentType, value: newValue})
+        splitScript.push({ type: currentType, value: newValue })
     });
 
     if (settings.showDebug) {
@@ -195,7 +216,7 @@ async function processLyrics(lyrics: redux.Lyrics) {
 
             if (timestampMatch) {
                 const timestamp = timestampMatch[0];
-                const lineText = subtitleLine.substring(timestamp.length);
+                const lineText = subtitleLine.substring(timestamp.length).replace(/\s/g, "");
                 let lineProcessed = await processLine(lineText);
                 trace.log(timestamp, ' - ', lineText, " - ", lineProcessed)
                 // Append romanized line to lyrics and subtitles
@@ -303,6 +324,10 @@ const createRomanizeButton = () => {
     }, 500);
 };
 
+/**
+ * This observer checks for the CSS class that starts with "_lyricsText"
+ * @returns { void } void
+ */
 function lyricsContainerObserver(): void {
     const lyricsText = document.querySelector('[class^="_lyricsText"]');
     if (lyricsText) return;
@@ -314,13 +339,21 @@ function lyricsContainerObserver(): void {
     });
 }
 
+// Entered the view where's the queue, suggested tracks, lyrics, credits.
 redux.intercept("view/ENTERED_NOWPLAYING", unloads, () => {
-    lyricsContainerObserver()
+    lyricsContainerObserver();
     createRomanizeButton();
 });
 
-redux.intercept("content/LOAD_ITEM_LYRICS_SUCCESS", unloads, (payload) => {
-    processLyrics(payload);
+redux.intercept("content/LOAD_ITEM_LYRICS_SUCCESS", unloads, async (payload) => {
+    try {
+        // Await again because I think in slow CPU sometimes it doesn't load if the user opens the NOWPLAYING view
+        // when the analyzer didn't init the lyrics is empty / didn't process.
+        await setUpKuroshiro();
+        processLyrics(payload);
+    } catch (err) {
+        trace.msg.err("Couldn't load the Kuroshiro Analyzer. Try restarting Tidal Client.");
+    }
 });
 
 redux.intercept("content/LOAD_ITEM_LYRICS", unloads, (payload) => {
@@ -335,4 +368,4 @@ unloads.add(() => {
 
 });
 
-
+setUpKuroshiro();
