@@ -216,7 +216,7 @@ async function processLyrics(lyrics: redux.Lyrics) {
 
             if (timestampMatch) {
                 const timestamp = timestampMatch[0];
-                const lineText = subtitleLine.substring(timestamp.length).replace(/\s/g, "");
+                const lineText = subtitleLine.substring(timestamp.length).trim();
                 let lineProcessed = await processLine(lineText);
                 trace.log(timestamp, ' - ', lineText, " - ", lineProcessed)
                 // Append romanized line to lyrics and subtitles
