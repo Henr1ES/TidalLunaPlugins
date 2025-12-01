@@ -9,6 +9,7 @@
 		"postinstall": "patch-package"
 	},
 	"devDependencies": {
+		"@inrixia/helpers": "^3.15.1",
 		"@types/node": "^24.0.0",
 		"@types/react": "^19.1.7",
 		"@types/react-dom": "^19.1.6",
@@ -24,10 +25,6 @@
 	},
 	"dependencies": {
 		"hangul-romanization": "^1.0.1",
-		"kuromoji": "^0.1.2",
-		"kuroshiro": "^1.2.0",
-		"kuroshiro-analyzer-kuromoji": "^1.1.0",
-		"patch-package": "^8.0.0",
 		"pinyin": "^4.0.0"
 	}
 }
