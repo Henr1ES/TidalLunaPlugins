@@ -38,12 +38,18 @@ enum scriptsEnum {
 
 
 // Plugin variables
-let lyricsMedia: redux.Lyrics;
-let romanizedLyrics: Map<string, string>;
+let lyricsMedia: redux.Lyrics | undefined;
+let romanizedLyrics: Map<string, string> = new Map();
 let islyricsContainerLoaded = false;
 let isNOWPLAYING = false;
 let isLyricsProcessed = false;
 let lyricsState = lyricsStateEnum.original;
+let syncRetryTimeout: LunaUnload | undefined;
+let lyricsDomSyncTimeout: LunaUnload | undefined;
+let syncMedia = 0;
+let currentTrackId: redux.ItemId | undefined;
+let currentMediaType: redux.ContentType | undefined;
+let lyricsDomObserver: MutationObserver | undefined;
 
 
 // #region Helpers
@@ -57,6 +63,127 @@ function _traceDebug(...msg: any[]): void {
         if (msg.length == 1) trace.debug(msg[0]);
         else trace.debug(msg);
     }
+}
+
+function normalizeLyricsLine(text?: string | null): string {
+    return text?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function getLyricsLineSpans(): HTMLSpanElement[] {
+    const nowPlayingLines = Array.from(
+        document.querySelectorAll('[data-test="now-playing-lyrics"] [data-test="lyrics-line"]')
+    ) as HTMLSpanElement[];
+    if (nowPlayingLines.length > 0) {
+        return nowPlayingLines;
+    }
+
+    return Array.from(
+        document.querySelector('[class^="_lyricsText"]')
+            ?.querySelector("div")
+            ?.querySelectorAll("span[class]") ?? []
+    ) as HTMLSpanElement[];
+}
+
+function buildLyricsFromDom(): redux.Lyrics | undefined {
+    const lines = getLyricsLineSpans()
+        .map((span) => normalizeLyricsLine(span.dataset.langRomanizerOriginal ?? span.textContent))
+        .filter((line) => line.length > 0 && line !== "...");
+
+    if (lines.length === 0) return;
+
+    const itemId = (currentTrackId ?? "dom-fallback") as redux.ItemId;
+    const lyrics = {
+        trackId: itemId,
+        lyricsProvider: "dom-fallback",
+        providerCommontrackId: itemId,
+        providerLyricsId: itemId,
+        lyrics: lines.join("\n"),
+        subtitles: "",
+        isRightToLeft: false,
+    } as redux.Lyrics;
+
+    _traceDebug("Lyrics extracted from DOM", {
+        trackId: itemId,
+        lyricLines: lines.length,
+        preview: lines.slice(0, 3),
+    });
+
+    return lyrics;
+}
+
+function clearSyncRetry(): void {
+    if (syncRetryTimeout) {
+        syncRetryTimeout();
+        syncRetryTimeout = undefined;
+    }
+}
+
+function clearLyricsDomSync(): void {
+    if (lyricsDomSyncTimeout) {
+        lyricsDomSyncTimeout();
+        lyricsDomSyncTimeout = undefined;
+    }
+}
+
+function scheduleSyncRetry(mediaItem: MediaItem | undefined, attempt: number, delay: number, mediaVersion: number): void {
+    clearSyncRetry();
+    syncRetryTimeout = safeTimeout(unloads, () => {
+        syncRetryTimeout = undefined;
+        void syncLyricsToDom(mediaItem, attempt, mediaVersion);
+    }, delay);
+}
+
+function refreshLyricsFromDom(force = false): boolean {
+    if (!force && lyricsMedia?.lyricsProvider !== "dom-fallback") return false;
+
+    const domLyrics = buildLyricsFromDom();
+    if (!domLyrics) return false;
+
+    const prevLyrics = lyricsMedia?.lyrics;
+    if (force || prevLyrics !== domLyrics.lyrics) {
+        lyricsMedia = domLyrics;
+        isLyricsProcessed = false;
+        romanizedLyrics.clear();
+        _traceDebug("Updated DOM lyrics fallback", {
+            lyricLines: domLyrics.lyrics.split("\n").length,
+            preview: domLyrics.lyrics.split("\n").slice(0, 3),
+        });
+        return true;
+    }
+
+    return false;
+}
+
+function disconnectLyricsDomObserver(): void {
+    lyricsDomObserver?.disconnect();
+    lyricsDomObserver = undefined;
+    clearLyricsDomSync();
+}
+
+function connectLyricsDomObserver(node: HTMLElement): void {
+    const target = node.matches('[data-test="now-playing-lyrics"]')
+        ? node
+        : node.closest<HTMLElement>('[data-test="now-playing-lyrics"]') ?? node;
+
+    disconnectLyricsDomObserver();
+
+    lyricsDomObserver = new MutationObserver(() => {
+        if (!isNOWPLAYING) return;
+        if (lyricsMedia?.lyricsProvider !== "dom-fallback") return;
+
+        clearLyricsDomSync();
+        lyricsDomSyncTimeout = safeTimeout(unloads, () => {
+            lyricsDomSyncTimeout = undefined;
+            if (refreshLyricsFromDom()) {
+                void syncLyricsToDom(undefined, 0, syncMedia);
+            }
+        }, 250);
+    });
+    lyricsDomObserver.observe(target, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+    });
 }
 
 /**
@@ -95,60 +222,7 @@ function checkScript(text: string): scriptsEnum {
     }
 }
 
-// #region Tokenizer
-
-/**
- * Spliting the characters by language
- * @param lyricsLine 
- * @returns { Promise<string> }
- */
-/* # TODO check if its needed tokenizer for songs with JP + Kr or CN + kr
-async function tokenizer(lyricsLine: string): Promise<string> {
-    const chars = [...lyricsLine];
-    let firstChar = chars.shift();
-    if (!firstChar) return "";
-    let prevType = checkScript(firstChar);
-
-    const splitScript: Array<{ type: scriptsEnum, value: string }> = [{
-        type: hasJapanese && prevType === scriptsEnum.Cn ? scriptsEnum.Jp : prevType,
-        value: firstChar
-    }]
-
-    chars.forEach((char) => {
-        let currentType = checkScript(char);
-        if (hasJapanese && currentType == scriptsEnum.Cn) { currentType = scriptsEnum.Jp; }
-
-        const sameType = currentType === prevType;
-        prevType = currentType;
-        let newValue = char;
-        if (sameType && splitScript.length > 0) {
-            // Merge with previous value
-            const last = splitScript.pop();
-            if (last) {
-                newValue = last.value + newValue;
-            }
-        }
-        splitScript.push({ type: currentType, value: newValue })
-    });
-
-    _traceDebug("hasJapanese", hasJapanese, "Tokenizer", splitScript.map(value => ({
-        type: scriptsEnum[value.type],
-        value: value.value
-    })));
-
-    const romanizedLine: string[] = [];
-    for (const part of splitScript) {
-        // Only romanize if the type is Cn, Ja, or Kr
-        if ([scriptsEnum.Cn, scriptsEnum.Jp, scriptsEnum.Kr].includes(part.type)) {
-            const romanized = await romanizer(part.value, part.type);
-            romanizedLine.push(romanized);
-        } else {
-            romanizedLine.push(part.value);
-        }
-    }
-    return romanizedLine.join(' ');
-}
-*/
+// #region Romanizer
 
 /**
  * Batch the lyrics by the script so if the lyrics is japanese we can skip the need 
@@ -261,26 +335,28 @@ async function processLyrics(lyrics: redux.Lyrics) {
             Array.from(results)
                 .flatMap(r => [...r.entries()])
                 .sort(([a], [b]) => a - b)
-                .map(([_, [original, romanized]]) => [original, romanized])
+                .map(([_, [original, romanized]]) => [normalizeLyricsLine(original), romanized])
         );
 
         if (lyricsRomanized.size > 0) {
             _traceDebug("All lyrics romanized:", lyricsRomanized);
         }
 
-        const newSubtitles = lyrics.subtitles.split("\n").map(sub => {
-            const timeMatch = sub.match(/^\[[\d:.]+\]\s*/);
-            if (timeMatch) {
-                const time = timeMatch[0]
-                const lineSub = lyricsRomanized.get(sub.substring(time.length).trim());
-                if (lineSub) {
-                    return sub + " #-# " + lineSub;
+        const newSubtitles = lyrics.subtitles
+            ? lyrics.subtitles.split("\n").map(sub => {
+                const timeMatch = sub.match(/^\[[\d:.]+\]\s*/);
+                if (timeMatch) {
+                    const time = timeMatch[0]
+                    const lineSub = lyricsRomanized.get(normalizeLyricsLine(sub.substring(time.length)));
+                    if (lineSub) {
+                        return sub + " #-# " + lineSub;
+                    }
                 }
-            }
-            return sub;
-        }).join("\n");
+                return sub;
+            }).join("\n")
+            : "";
         const newLyrics = splitLyrics.map(lyr => {
-            const lineLyrics = lyricsRomanized.get(lyr)?.trim();
+            const lineLyrics = lyricsRomanized.get(normalizeLyricsLine(lyr))?.trim();
             if (lineLyrics) {
                 return lyr + " #-# " + lineLyrics;
             }
@@ -304,15 +380,30 @@ async function processLyrics(lyrics: redux.Lyrics) {
  * because the redux action wasn't capture it needs to modify manually
  * the lyrics DOM, for what I tested this way is more reliable. 
  */
-const applyRomanization = async function () {
-    const lyricsSpans = document.querySelector('[class^="_lyricsText"]')
-        ?.querySelector("div")
-        ?.querySelectorAll("span[class]") as NodeListOf<HTMLSpanElement>;
-    _traceDebug("Apply Romanization", lyricsSpans);
+const applyRomanization = function (): number {
+    const lyricsSpans = getLyricsLineSpans();
+    let appliedCount = 0;
+    _traceDebug("Apply Romanization", {
+        spansFound: lyricsSpans.length,
+        romanizedLines: romanizedLyrics.size,
+        lyricsState: lyricsStateEnum[lyricsState],
+        toggleRomanize: settings.toggleRomanize,
+    });
 
     lyricsSpans.forEach(span => {
-        _traceDebug(span);
-        const originalText = span.textContent?.trim();
+        const currentState = span.dataset.langRomanizerState;
+        const originalText = normalizeLyricsLine(span.dataset.langRomanizerOriginal ?? span.textContent);
+        const cachedRomanized = span.dataset.langRomanizerRomanized;
+
+        if (settings.toggleRomanize && currentState === "romanized" && cachedRomanized) {
+            appliedCount++;
+            return;
+        }
+        if (!settings.toggleRomanize && currentState === "original" && cachedRomanized) {
+            appliedCount++;
+            return;
+        }
+
         if (!originalText || !romanizedLyrics.has(originalText)) return;
 
         const romanizedText = romanizedLyrics.get(originalText)!;
@@ -323,23 +414,34 @@ const applyRomanization = async function () {
             const hiddenOriginal = document.createElement('span');
             hiddenOriginal.style.display = 'none';
             hiddenOriginal.textContent = originalText;
+            hiddenOriginal.dataset.langRomanizerHidden = 'original';
 
             span.innerHTML = '';  // Full reset
             span.appendChild(hiddenOriginal);
             span.appendChild(document.createTextNode(romanizedText));
+            span.dataset.langRomanizerOriginal = originalText;
+            span.dataset.langRomanizerRomanized = romanizedText;
+            span.dataset.langRomanizerState = 'romanized';
             lyricsState = lyricsStateEnum.romanized
         } else {
             // Show original, hide romanized  
             const hiddenRomanized = document.createElement('span');
             hiddenRomanized.style.display = 'none';
             hiddenRomanized.textContent = romanizedText;
+            hiddenRomanized.dataset.langRomanizerHidden = 'romanized';
 
             span.innerHTML = originalText;  // Reset to original
             span.appendChild(hiddenRomanized);
+            span.dataset.langRomanizerOriginal = originalText;
+            span.dataset.langRomanizerRomanized = romanizedText;
+            span.dataset.langRomanizerState = 'original';
             lyricsState = lyricsStateEnum.original
         }
+        appliedCount++;
     });
 
+    _traceDebug("Apply Romanization Result", { appliedCount, spansFound: lyricsSpans.length });
+    return appliedCount;
 };
 
 /**
@@ -351,13 +453,12 @@ const toggleLyricsRomanization = async function () {
         if (!mediaItem) return;
         await loadLyrics(mediaItem);
     }
+    if (!lyricsMedia) return;
 
     if (romanizedLyrics.size === 0) {
         await processLyrics(lyricsMedia);
     }
-    const lyricsSpans = document.querySelector('[class^="_lyricsText"]')
-        ?.querySelector("div")
-        ?.querySelectorAll("span[class]") as NodeListOf<HTMLSpanElement>;
+    const lyricsSpans = getLyricsLineSpans();
 
     trace.msg.log("Switching lyrics to", lyricsStateEnum[lyricsState]);
     lyricsSpans.forEach(span => {
@@ -375,8 +476,48 @@ const toggleLyricsRomanization = async function () {
             const temp = hiddenSpan.textContent;
             hiddenSpan.textContent = visibleTextNode.textContent?.trim() || '';
             visibleTextNode.textContent = temp;
+            span.dataset.langRomanizerState = lyricsState === lyricsStateEnum.romanized ? 'romanized' : 'original';
         }
     });
+}
+
+async function syncLyricsToDom(mediaItem?: MediaItem, attempt = 0, mediaVersion = syncMedia): Promise<void> {
+    if (mediaVersion !== syncMedia) return;
+    if (!isNOWPLAYING || !settings.toggleRomanize) return;
+
+    refreshLyricsFromDom();
+
+    if (!lyricsMedia) {
+        const loaded = await loadLyrics(mediaItem);
+        if (!loaded) {
+            if (attempt < 6) {
+                _traceDebug("Lyrics not available yet, retrying load", { attempt: attempt + 1 });
+                scheduleSyncRetry(mediaItem, attempt + 1, 800, mediaVersion);
+            }
+            return;
+        }
+    }
+
+    if (!lyricsMedia) return;
+
+    if (romanizedLyrics.size === 0) {
+        _traceDebug("Lyrics container ready but no romanized data - processing now");
+        await processLyrics(lyricsMedia);
+        if (romanizedLyrics.size === 0) {
+            _traceDebug("No romanizable lyrics found for current track");
+            return;
+        }
+    }
+
+    const appliedCount = applyRomanization();
+    if (appliedCount > 0) {
+        clearSyncRetry();
+        return;
+    }
+    if (attempt < 6) {
+        _traceDebug("No lyrics were applied to DOM yet, retrying", { attempt: attempt + 1 });
+        scheduleSyncRetry(mediaItem, attempt + 1, 800, mediaVersion);
+    }
 }
 
 // Creates a button to toggle romanization of lyrics and places it next to the fullscreen button
@@ -386,26 +527,28 @@ const createRomanizeButton = () => {
         // Check if the button already exists
         if (document.querySelector('#romanize-button')) return;
 
-        // Search for the fullscreen button
-        const fullscreenButton = document.querySelector('[data-test^="request-fullscreen"]');
+        // Support both older and newer Tidal button test IDs.
+        const headerButton = document.querySelector(
+            '[data-test^="request-fullscreen"], [data-test^="toggle-lyrics"]'
+        );
         // Not found, retry after a delay
-        if (!fullscreenButton || !fullscreenButton.parentElement) {
+        if (!headerButton || !headerButton.parentElement) {
             safeTimeout(unloads, () => createRomanizeButton(), 1250);
             return;
         }
-        const fullcreenSpan = fullscreenButton.querySelector("span");
-        if (!fullcreenSpan || !fullcreenSpan.parentElement) {
+        const headerButtonSpan = headerButton.querySelector("span");
+        if (!headerButtonSpan || !headerButtonSpan.parentElement) {
             safeTimeout(unloads, () => createRomanizeButton(), 1250);
             return;
         }
-        const buttonContainer = fullscreenButton.parentElement;
-        const spanClass = fullcreenSpan.className;
+        const buttonContainer = headerButton.parentElement;
+        const spanClass = headerButtonSpan.className;
 
         // Create the button element
         const romanizeButton = document.createElement("button");
         const romanizeSpan = document.createElement("span");
         romanizeButton.id = 'romanize-button';
-        romanizeButton.className = 'romanize-button' + " " + fullscreenButton.className;
+        romanizeButton.className = 'romanize-button' + " " + headerButton.className;
         romanizeSpan.textContent = 'Romanize Lyrics';
         if (spanClass) {
             romanizeSpan.className = spanClass;
@@ -416,7 +559,7 @@ const createRomanizeButton = () => {
 
         // Insert after the fullscreen button
         romanizeButton.appendChild(romanizeSpan);
-        buttonContainer.insertBefore(romanizeButton, fullscreenButton.nextSibling);
+        buttonContainer.insertBefore(romanizeButton, headerButton.nextSibling);
 
     }, 500);
 };
@@ -432,7 +575,7 @@ const createRomanizeButton = () => {
 function lyricsContainerObserver(): void {
     //const lyricsText = document.querySelector('[class^="_lyricsText"]');
     //if (lyricsText) return;
-    observe<HTMLElement>(unloads, '[class^="_lyricsText"]', (node) => {
+    observe<HTMLElement>(unloads, '[class^="_lyricsText"], [data-test="now-playing-lyrics"]', (node) => {
         if (node) {
             _traceDebug("Lyrics Text container found!");
             _traceDebug({
@@ -440,21 +583,13 @@ function lyricsContainerObserver(): void {
                 "toggleRomanize": settings.toggleRomanize, "lyricsState": lyricsState
             });
             islyricsContainerLoaded = true;
+            connectLyricsDomObserver(node);
             safeTimeout(unloads, () => {
-                if (isNOWPLAYING
-                    && romanizedLyrics.size > 0
-                    && settings.toggleRomanize
-                    && lyricsState === lyricsStateEnum.original) {
-                    applyRomanization();
-                } else if (lyricsMedia && isNOWPLAYING && settings.toggleRomanize) {
-                    _traceDebug("Lyrics container ready but no romanized data - processing now");
-                    processLyrics(lyricsMedia).then(() => {
-                        safeTimeout(unloads, () => applyRomanization(), 150);
-                    });
-                }
+                void syncLyricsToDom(undefined, 0, syncMedia);
             }, 500);
         } else if (!node) {
             islyricsContainerLoaded = false;
+            disconnectLyricsDomObserver();
         } else {
             _traceDebug("Lyrics container not loaded");
         }
@@ -469,6 +604,7 @@ redux.intercept("view/ENTERED_NOWPLAYING", unloads, () => {
 
 redux.intercept("view/EXIT_NOWPLAYING", unloads, () => {
     isNOWPLAYING = false;
+    disconnectLyricsDomObserver();
 });
 
 /**
@@ -480,44 +616,120 @@ redux.intercept("view/EXIT_NOWPLAYING", unloads, () => {
  * @param {MediaItem} MediaItem object that contains the Lyrics interface
  * @returns void
  */
-async function loadLyrics(mediaItem?: MediaItem) {
+async function loadLyrics(mediaItem?: MediaItem): Promise<boolean> {
     if (!mediaItem) {
-        romanizedLyrics = new Map<string, string>();
         mediaItem = await MediaItem.fromPlaybackContext();
+        _traceDebug("MediaItem.fromPlaybackContext()", mediaItem
+            ? {
+                id: mediaItem.id,
+                title: mediaItem.tidalItem?.title,
+                contentType: mediaItem.contentType,
+            }
+            : undefined);
     }
-    if (!mediaItem) return;
+
+    if (!mediaItem) {
+        lyricsMedia = undefined;
+        currentTrackId = undefined;
+        currentMediaType = undefined;
+        return false;
+    }
+    currentTrackId = mediaItem.id;
+    currentMediaType = mediaItem.contentType;
+
+    _traceDebug("loadLyrics mediaItem", {
+        id: mediaItem.id,
+        title: mediaItem.tidalItem?.title,
+        contentType: mediaItem.contentType,
+    });
 
     const lyrics = await mediaItem.lyrics();
-    if (!lyrics || !lyrics.subtitles) {
-        return;
+    _traceDebug("mediaItem.lyrics()", lyrics
+        ? {
+            trackId: lyrics.trackId,
+            provider: lyrics.lyricsProvider,
+            hasLyrics: !!lyrics.lyrics,
+            hasSubtitles: !!lyrics.subtitles,
+            lyricLines: lyrics.lyrics?.split("\n").length ?? 0,
+        }
+        : undefined);
+    if (!lyrics || !lyrics.lyrics) {
+        const domLyrics = buildLyricsFromDom();
+        if (domLyrics) {
+            lyricsMedia = domLyrics;
+            _traceDebug("Using DOM lyrics fallback", {
+                trackId: domLyrics.trackId,
+                provider: domLyrics.lyricsProvider,
+                lyricLines: domLyrics.lyrics.split("\n").length,
+                currentMediaType,
+            });
+            return true;
+        }
+        lyricsMedia = undefined;
+        return false;
     }
     lyricsMedia = lyrics;
-    _traceDebug("Lyrics Loaded", lyrics)
+    _traceDebug("Lyrics Loaded", {
+        provider: lyrics.lyricsProvider,
+        hasSubtitles: !!lyrics.subtitles,
+        lyricLines: lyrics.lyrics.split("\n").length,
+    });
+    return true;
 }
 
-MediaItem.onMediaTransition(unloads, async (mediaItem) => {
+redux.intercept("content/LOAD_ITEM_LYRICS", unloads, (payload) => {
+    _traceDebug("content/LOAD_ITEM_LYRICS", payload);
+});
+
+redux.intercept("content/LOAD_ITEM_LYRICS_FAIL", unloads, (payload) => {
+    _traceDebug("content/LOAD_ITEM_LYRICS_FAIL", payload);
+});
+
+redux.intercept("content/LOAD_ITEM_LYRICS_SUCCESS", unloads, (lyrics) => {
+    _traceDebug("content/LOAD_ITEM_LYRICS_SUCCESS", {
+        trackId: lyrics.trackId,
+        provider: lyrics.lyricsProvider,
+        hasLyrics: !!lyrics.lyrics,
+        hasSubtitles: !!lyrics.subtitles,
+        lyricLines: lyrics.lyrics?.split("\n").length ?? 0,
+        currentTrackId,
+    });
+
+    if (currentTrackId !== undefined && lyrics.trackId !== currentTrackId && currentMediaType !== "video") return;
+
+    lyricsMedia = lyrics;
     isLyricsProcessed = false;
+    romanizedLyrics.clear();
+
+    if (islyricsContainerLoaded) {
+        safeTimeout(unloads, () => {
+            void syncLyricsToDom(undefined, 0, syncMedia);
+        }, 250);
+    }
+});
+
+MediaItem.onMediaTransition(unloads, async (mediaItem) => {
+    syncMedia++;
+    clearSyncRetry();
+    clearLyricsDomSync();
+    isLyricsProcessed = false;
+    lyricsMedia = undefined;
+    lyricsState = lyricsStateEnum.original;
+    currentTrackId = mediaItem.id;
+    currentMediaType = mediaItem.contentType;
     romanizedLyrics.clear();
     await loadLyrics(mediaItem);
     if (islyricsContainerLoaded) {
         safeTimeout(unloads, () => {
-            if (isNOWPLAYING
-                && romanizedLyrics.size > 0
-                && settings.toggleRomanize
-                && lyricsState === lyricsStateEnum.original) {
-                applyRomanization();
-            } else if (lyricsMedia && isNOWPLAYING && settings.toggleRomanize) {
-                _traceDebug("Lyrics container ready but no romanized data - processing now");
-                processLyrics(lyricsMedia).then(() => {
-                    safeTimeout(unloads, () => applyRomanization(), 150);
-                });
-            }
+            void syncLyricsToDom(mediaItem, 0, syncMedia);
         }, 250);
     }
 });
 
 unloads.add(() => {
-    const romanizeButton = document.getElementById('#romanize-button');
+    clearSyncRetry();
+    disconnectLyricsDomObserver();
+    const romanizeButton = document.getElementById('romanize-button');
     if (romanizeButton && romanizeButton.parentElement) {
         romanizeButton.parentElement.removeChild(romanizeButton);
     }
