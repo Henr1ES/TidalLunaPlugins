@@ -84,6 +84,14 @@ function getLyricsLineSpans(): HTMLSpanElement[] {
     ) as HTMLSpanElement[];
 }
 
+function clearLyricsLineState(): void {
+    for (const span of getLyricsLineSpans()) {
+        delete span.dataset.langRomanizerOriginal;
+        delete span.dataset.langRomanizerRomanized;
+        delete span.dataset.langRomanizerState;
+    }
+}
+
 function buildLyricsFromDom(): redux.Lyrics | undefined {
     const lines = getLyricsLineSpans()
         .map((span) => normalizeLyricsLine(span.dataset.langRomanizerOriginal ?? span.textContent))
@@ -169,20 +177,19 @@ function connectLyricsDomObserver(node: HTMLElement): void {
 
     lyricsDomObserver = new MutationObserver(() => {
         if (!isNOWPLAYING) return;
-        if (lyricsMedia?.lyricsProvider !== "dom-fallback") return;
 
         clearLyricsDomSync();
         lyricsDomSyncTimeout = safeTimeout(unloads, () => {
             lyricsDomSyncTimeout = undefined;
-            if (refreshLyricsFromDom()) {
-                void syncLyricsToDom(undefined, 0, syncMedia);
-            }
+            refreshLyricsFromDom();
+            void syncLyricsToDom(undefined, 0, syncMedia);
         }, 250);
     });
     lyricsDomObserver.observe(target, {
         childList: true,
         subtree: true,
         characterData: true,
+        attributes: true,
     });
 }
 
@@ -392,14 +399,35 @@ const applyRomanization = function (): number {
 
     lyricsSpans.forEach(span => {
         const currentState = span.dataset.langRomanizerState;
-        const originalText = normalizeLyricsLine(span.dataset.langRomanizerOriginal ?? span.textContent);
-        const cachedRomanized = span.dataset.langRomanizerRomanized;
+        const datasetOriginal = normalizeLyricsLine(span.dataset.langRomanizerOriginal);
+        const cachedRomanized = normalizeLyricsLine(span.dataset.langRomanizerRomanized);
+        const datasetMatchesCurrentSong = !!datasetOriginal && romanizedLyrics.get(datasetOriginal) === span.dataset.langRomanizerRomanized;
+        const hiddenOriginal = span.querySelector('span[data-lang-romanizer-hidden="original"]') as HTMLSpanElement | null;
+        const hiddenRomanized = span.querySelector('span[data-lang-romanizer-hidden="romanized"]') as HTMLSpanElement | null;
+        const visibleTextNode = Array.from(span.childNodes)
+            .find(node => node.nodeType === Node.TEXT_NODE) as Text | undefined;
+        const visibleText = normalizeLyricsLine(visibleTextNode?.textContent);
+        const originalText = normalizeLyricsLine(
+            datasetMatchesCurrentSong
+                ? datasetOriginal
+                : hiddenOriginal?.textContent ?? hiddenRomanized?.textContent ?? span.textContent
+        );
 
-        if (settings.toggleRomanize && currentState === "romanized" && cachedRomanized) {
+        if (datasetMatchesCurrentSong
+            && settings.toggleRomanize
+            && currentState === "romanized"
+            && cachedRomanized
+            && visibleText === cachedRomanized
+            && normalizeLyricsLine(hiddenOriginal?.textContent) === originalText) {
             appliedCount++;
             return;
         }
-        if (!settings.toggleRomanize && currentState === "original" && cachedRomanized) {
+        if (datasetMatchesCurrentSong
+            && !settings.toggleRomanize
+            && currentState === "original"
+            && cachedRomanized
+            && normalizeLyricsLine(hiddenRomanized?.textContent) === cachedRomanized
+            && visibleText === originalText) {
             appliedCount++;
             return;
         }
@@ -712,6 +740,7 @@ MediaItem.onMediaTransition(unloads, async (mediaItem) => {
     syncMedia++;
     clearSyncRetry();
     clearLyricsDomSync();
+    clearLyricsLineState();
     isLyricsProcessed = false;
     lyricsMedia = undefined;
     lyricsState = lyricsStateEnum.original;
